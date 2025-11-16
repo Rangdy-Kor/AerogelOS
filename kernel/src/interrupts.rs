@@ -5,10 +5,16 @@ use x86_64::VirtAddr;
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
+use vga_driver::{print_colored, Color};
 
+// 스캔코드 버퍼 (원형 큐)
 static mut SCANCODE_BUFFER: [u8; 16] = [0; 16];
 static mut BUFFER_HEAD: usize = 0;
 static mut BUFFER_TAIL: usize = 0;
+
+// 디버깅용 카운터
+static mut TIMER_TICKS: u64 = 0;
+static mut KEYBOARD_INTERRUPTS: u64 = 0;
 
 pub fn read_scancode() -> Option<u8> {
     unsafe {
@@ -20,6 +26,14 @@ pub fn read_scancode() -> Option<u8> {
             None
         }
     }
+}
+
+pub fn get_timer_ticks() -> u64 {
+    unsafe { TIMER_TICKS }
+}
+
+pub fn get_keyboard_interrupts() -> u64 {
+    unsafe { KEYBOARD_INTERRUPTS }
 }
 
 pub const PIC_1_OFFSET: u8 = 32;
@@ -78,6 +92,7 @@ lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         
+        // CPU 예외 핸들러들
         idt.divide_error.set_handler_fn(divide_error_handler);
         idt.debug.set_handler_fn(debug_handler);
         idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
@@ -102,6 +117,8 @@ lazy_static! {
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
         }
         
+        // 타이머와 키보드 인터럽트 핸들러
+        idt[InterruptIndex::Timer as usize].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
         
         idt
@@ -115,7 +132,8 @@ pub fn init_idt() {
 pub fn init_pics() {
     unsafe { 
         PICS.lock().initialize();
-        PICS.lock().write_masks(0b11111101, 0b11111111);
+        // 타이머(IRQ0)와 키보드(IRQ1) 모두 활성화
+        PICS.lock().write_masks(0b11111100, 0b11111111);
     };
 }
 
@@ -123,75 +141,136 @@ pub fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 }
 
+// 타이머 인터럽트 핸들러 (디버그 출력 추가)
+extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        TIMER_TICKS += 1;
+        
+        // 매 100 틱마다 점 출력
+        if TIMER_TICKS % 100 == 0 {
+            print_colored(".", Color::DarkGray, Color::Black);
+        }
+        
+        PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer as u8);
+    }
+}
+
+// 키보드 인터럽트 핸들러 (디버그 출력 추가)
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
+    
+    unsafe {
+        KEYBOARD_INTERRUPTS += 1;
+        
+        // 키보드 인터럽트가 발생했음을 표시
+        print_colored("K", Color::Yellow, Color::Black);
+    }
     
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
     
+    // 버퍼에 저장
     unsafe {
         let next_tail = (BUFFER_TAIL + 1) % 16;
         if next_tail != BUFFER_HEAD {
             SCANCODE_BUFFER[BUFFER_TAIL] = scancode;
             BUFFER_TAIL = next_tail;
         }
+    }
+    
+    // EOI 신호 전송
+    unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8);
     }
 }
 
+// CPU 예외 핸들러들
 extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {}
+
 extern "x86-interrupt" fn divide_error_handler(_stack_frame: InterruptStackFrame) {
+    print_colored("\n[EXCEPTION] Divide Error\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn debug_handler(_stack_frame: InterruptStackFrame) {}
+
 extern "x86-interrupt" fn nmi_handler(_stack_frame: InterruptStackFrame) {
+    print_colored("\n[EXCEPTION] NMI\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn overflow_handler(_stack_frame: InterruptStackFrame) {
+    print_colored("\n[EXCEPTION] Overflow\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn bound_range_handler(_stack_frame: InterruptStackFrame) {
+    print_colored("\n[EXCEPTION] Bound Range Exceeded\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn invalid_opcode_handler(_stack_frame: InterruptStackFrame) {
+    print_colored("\n[EXCEPTION] Invalid Opcode\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn device_not_available_handler(_stack_frame: InterruptStackFrame) {
+    print_colored("\n[EXCEPTION] Device Not Available\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn invalid_tss_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
+    print_colored("\n[EXCEPTION] Invalid TSS\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn segment_not_present_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
+    print_colored("\n[EXCEPTION] Segment Not Present\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn stack_segment_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
+    print_colored("\n[EXCEPTION] Stack Segment Fault\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn general_protection_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
+    print_colored("\n[EXCEPTION] General Protection Fault\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn page_fault_handler(
     _stack_frame: InterruptStackFrame,
     _error_code: x86_64::structures::idt::PageFaultErrorCode,
 ) {
+    print_colored("\n[EXCEPTION] Page Fault\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn x87_fpu_handler(_stack_frame: InterruptStackFrame) {
+    print_colored("\n[EXCEPTION] x87 FPU Error\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn alignment_check_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
+    print_colored("\n[EXCEPTION] Alignment Check\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn machine_check_handler(_stack_frame: InterruptStackFrame) -> ! {
+    print_colored("\n[EXCEPTION] Machine Check\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn simd_fpu_handler(_stack_frame: InterruptStackFrame) {
+    print_colored("\n[EXCEPTION] SIMD FPU Error\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }
+
 extern "x86-interrupt" fn double_fault_handler(
     _stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
+    print_colored("\n[EXCEPTION] Double Fault\n", Color::Red, Color::Black);
     loop { x86_64::instructions::hlt(); }
 }

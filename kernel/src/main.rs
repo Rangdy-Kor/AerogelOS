@@ -99,9 +99,12 @@ fn handle_keypress(scancode: u8) {
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    // 인터럽트 비활성화
+    x86_64::instructions::interrupts::disable();
+    
     clear_screen();
     
-    println!("=== AerogelOS v0.1.0 ===");
+    println!("=== AerogelOS v0.1.0 DEBUG ===");
     println!();
     
     print_colored("부팅 시퀀스 시작...\n", Color::LightCyan, Color::Black);
@@ -110,15 +113,23 @@ pub extern "C" fn _start() -> ! {
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("VGA 텍스트 드라이버 초기화");
 
-    x86_64::instructions::interrupts::disable();
-
-	interrupts::init_gdt();  // IDT 전에 호출
-	interrupts::init_idt();
+    // GDT 초기화
+    print_colored("[...] ", Color::Yellow, Color::Black);
+    println!("GDT 초기화 중...");
+    interrupts::init_gdt();
+    print_colored("[OK] ", Color::LightGreen, Color::Black);
+    println!("GDT 로드 완료");
     
+    // IDT 초기화
+    print_colored("[...] ", Color::Yellow, Color::Black);
+    println!("IDT 초기화 중...");
     interrupts::init_idt();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("IDT 로드 완료");
     
+    // PIC 초기화
+    print_colored("[...] ", Color::Yellow, Color::Black);
+    println!("PIC 초기화 중...");
     interrupts::init_pics();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("PIC 초기화 완료");
@@ -135,20 +146,48 @@ pub extern "C" fn _start() -> ! {
     println!();
     print_colored("커널 초기화 완료!\n", Color::LightGreen, Color::Black);
     
+    // 인터럽트 플래그 확인
+    print_colored("[TEST] ", Color::Cyan, Color::Black);
+    println!("인터럽트 활성화 전 - CPU 플래그 확인");
+    
+    // 인터럽트 활성화
+    print_colored("[...] ", Color::Yellow, Color::Black);
+    println!("CPU 인터럽트 활성화 중...");
     interrupts::enable_interrupts();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("CPU 인터럽트 활성화 완료");
     
+    // 인터럽트가 활성화됐는지 확인
+    print_colored("[TEST] ", Color::Cyan, Color::Black);
+    println!("인터럽트 플래그 확인...");
+    
     println!();
-    println!("키보드 입력 대기 중... (ESC로 종료)");
+    println!("키보드 입력 대기 중... (타이머 인터럽트로 점이 찍혀야 함)");
     println!();
     
+    // 카운터로 루프가 도는지 확인
+    let mut counter: u32 = 0;
+    
     loop {
+        counter = counter.wrapping_add(1);
+        
+        // 1000000번마다 수동으로 메시지 출력
+        if counter % 1000000 == 0 {
+            print_colored("L", Color::Cyan, Color::Black);  // Loop 표시
+        }
+        
+        // 버퍼에서 스캔코드 읽기
         if let Some(scancode) = interrupts::read_scancode() {
+            println!();
+            print_colored("[SCAN] ", Color::Magenta, Color::Black);
+            // 키 눌림만 처리
             if scancode & 0x80 == 0 {
                 handle_keypress(scancode);
             }
+            println!();
         }
+        
+        // 타이머 인터럽트가 CPU를 깨워줌
         x86_64::instructions::hlt();
     }
 }
