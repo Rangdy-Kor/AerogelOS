@@ -19,8 +19,12 @@ lazy_static! {
 
 pub fn init_idt() {
     IDT.load();
+    // IDT 로드 후 바로 인터럽트를 활성화합니다.
+    x86_64::instructions::interrupts::enable();
+    
+    // 두 작업이 완료된 후 성공 메시지를 출력합니다.
     print_colored("[OK] ", Color::LightGreen, Color::Black);
-    println!("IDT 로드 완료");
+    println!("IDT 로드 및 CPU 인터럽트 활성화 완료");
 }
 
 extern "x86-interrupt" fn breakpoint_handler(

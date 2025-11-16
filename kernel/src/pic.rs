@@ -5,6 +5,7 @@ const PIC1_COMMAND: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
 const PIC2_COMMAND: u16 = 0xA0;
 const PIC2_DATA: u16 = 0xA1;
+const PIC_EOI: u8 = 0x20; // EOI 명령
 
 const ICW1_INIT: u8 = 0x11;
 const ICW4_8086: u8 = 0x01;
@@ -36,7 +37,7 @@ pub fn init_pic() {
         pic2_data.write(ICW4_8086);
         io_wait();
 
-        pic1_data.write(0x00);
+        pic1_data.write(0xFF);
         pic2_data.write(0xFF);
     }
 
@@ -44,15 +45,21 @@ pub fn init_pic() {
     println!("PIC 초기화 완료");
 }
 
-pub fn end_of_interrupt(irq: u8) {
+pub fn end_of_interrupt(vector_number: u8) { // 인수를 vector_number로 가정
     unsafe {
         let mut pic1_command = Port::<u8>::new(PIC1_COMMAND);
         let mut pic2_command = Port::<u8>::new(PIC2_COMMAND);
 
-        if irq >= 8 {
-            pic2_command.write(0x20);
+        // 인터럽트 벡터 40번(IRQ 8) 이상은 슬레이브 PIC가 처리합니다.
+        if vector_number >= 40 {
+            // 1. 슬레이브 PIC에게 EOI 신호 전송
+            pic2_command.write(PIC_EOI);
+            io_wait(); // 명령어 처리 대기 (안정성 강화)
         }
-        pic1_command.write(0x20);
+
+        // 2. 마스터 PIC에게 EOI 신호 전송 (슬레이브 인터럽트의 경우에도 필요)
+        pic1_command.write(PIC_EOI);
+        io_wait(); // 명령어 처리 대기
     }
 }
 
