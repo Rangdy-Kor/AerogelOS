@@ -8,20 +8,12 @@ use vga_driver::println;
 use x86_64::instructions::port::Port;
 
 mod interrupts;
-mod keyboard;
 mod pic;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     clear_screen();
     
-	// PIC 초기화 추가
-    print_colored("PIC 초기화 중...\n", Color::LightCyan, Color::Black);
-    pic::init_pic(); // <--- PIC 초기화 함수 호출
-    print_colored("[OK] ", Color::LightGreen, Color::Black);
-    println!("PIC 초기화 완료");
-
-    // 다양한 색상으로 출력 테스트
     println!("=== AerogelOS v0.1.0 ===");
     println!();
     
@@ -31,14 +23,23 @@ pub extern "C" fn _start() -> ! {
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("VGA 텍스트 드라이버 초기화");
 
-	interrupts::init_idt();
+    // 1단계: PIC 초기화 (모든 IRQ 마스크됨)
+    print_colored("PIC 초기화 중...\n", Color::LightCyan, Color::Black);
+    pic::init_pic();
 
-	// 0xFF (255) & ~(1 << 1) = 0xFD
-	unsafe {
-        let mut pic1_data = Port::<u8>::new(0x21); // PIC1 데이터 포트
-        // IRQ 1(키보드)를 활성화 (나머지는 마스크 상태 유지)
-        pic1_data.write(0xFD); 
+    // 2단계: IDT 로드
+    interrupts::init_idt();
+
+    // 3단계: 키보드 IRQ만 언마스크
+    unsafe {
+        let mut pic1_data = Port::<u8>::new(0x21);
+        pic1_data.write(0xFD); // IRQ 1(키보드)만 활성화
     }
+    print_colored("[OK] ", Color::LightGreen, Color::Black);
+    println!("키보드 IRQ 활성화");
+
+    // 4단계: CPU 인터럽트 활성화
+    interrupts::enable_interrupts();
     
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("메모리 맵 확인");
@@ -54,7 +55,7 @@ pub extern "C" fn _start() -> ! {
     
     println!();
     print_colored("스크롤 테스트:\n", Color::Pink, Color::Black);
-    for i in 0..30 {
+    for i in 0..10 {
         println!("라인 {}  - 스크롤이 작동하는지 확인", i);
     }
     
@@ -88,13 +89,12 @@ pub extern "C" fn _start() -> ! {
     
     println!();
     print_colored("커널 초기화 완료!\n", Color::LightGreen, Color::Black);
-    print_colored("시스템 준비됨.\n", Color::LightCyan, Color::Black);
+    print_colored("시스템 준비됨. 키보드 입력을 시작하세요.\n", Color::LightCyan, Color::Black);
+    println!();
+    print_colored("> ", Color::Yellow, Color::Black);
     
     loop {
-        // x86 명령어 'hlt' (halt)를 실행하여 CPU를 낮은 전력 상태로 멈춥니다.
-        // 다음 인터럽트가 발생할 때까지 CPU는 멈춰있습니다.
-        // 만약 'hlt'를 지원하지 않는다면 단순 루프도 재부팅은 막을 수 있습니다.
-        x86_64::instructions::hlt(); 
+        x86_64::instructions::hlt();
     }
 }
 
@@ -102,5 +102,7 @@ pub extern "C" fn _start() -> ! {
 fn panic(info: &PanicInfo) -> ! {
     print_colored("\n\n!!! KERNEL PANIC !!!\n", Color::White, Color::Red);
     println!("{}", info);
-    loop {}
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
