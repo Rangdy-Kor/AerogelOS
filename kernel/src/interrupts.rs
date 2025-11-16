@@ -1,24 +1,33 @@
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use lazy_static::lazy_static;
 use vga_driver::{println, print_colored, Color};
-use x86_64::instructions::port::Port;
+use pic8259::ChainedPics;
+use spin::Mutex;
+
+pub const PIC_1_OFFSET: u8 = 32;
+pub const PIC_2_OFFSET: u8 = 40;
+
+pub static PICS: Mutex<ChainedPics> =
+    Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum InterruptIndex {
+    Keyboard = PIC_1_OFFSET + 1,
+}
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         
         idt.breakpoint.set_handler_fn(breakpoint_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
+        idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
         
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(0);
         }
-        
-        // 키보드 인터럽트 직접 등록
-        idt[33].set_handler_fn(keyboard_interrupt_handler);
-        
         idt
     };
 }
@@ -27,6 +36,12 @@ pub fn init_idt() {
     IDT.load();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("IDT 로드 및 키보드 핸들러 등록 완료");
+}
+
+pub fn init_pics() {
+    unsafe { PICS.lock().initialize() };
+    print_colored("[OK] ", Color::LightGreen, Color::Black);
+    println!("PIC 초기화 완료");
 }
 
 pub fn enable_interrupts() {
@@ -51,25 +66,10 @@ extern "x86-interrupt" fn double_fault_handler(
     }
 }
 
-extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: PageFaultErrorCode,
-) {
-    use x86_64::registers::control::Cr2;
-    
-    print_colored("\n!!! PAGE FAULT !!!\n", Color::White, Color::Red);
-    println!("Accessed Address: {:?}", Cr2::read());
-    println!("Error Code: {:?}", error_code);
-    println!("{:#?}", stack_frame);
-    loop {
-        x86_64::instructions::hlt();
-    }
-}
-
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    print_colored("[K]", Color::Green, Color::Black);
+    use x86_64::instructions::port::Port;
     
-    const KEYBOARD_DATA_PORT: u16 = 0x60;
+    print_colored("[K]", Color::Green, Color::Black);
     
     static SCANCODE_TO_ASCII: [Option<char>; 58] = [
         None, None, Some('1'), Some('2'), Some('3'), Some('4'), Some('5'), 
@@ -84,25 +84,16 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         None, Some(' '),
     ];
     
-    let mut data_port = Port::new(KEYBOARD_DATA_PORT);
-    let scancode: u8 = unsafe { data_port.read() };
+    let mut port = Port::new(0x60);
+    let scancode: u8 = unsafe { port.read() };
     
-    if scancode & 0x80 != 0 {
-        unsafe {
-            let mut pic1 = Port::<u8>::new(0x20);
-            pic1.write(0x20);
+    if scancode & 0x80 == 0 {
+        if let Some(Some(ch)) = SCANCODE_TO_ASCII.get(scancode as usize) {
+            print_colored(&ch.to_string(), Color::LightCyan, Color::Black);
         }
-        return;
-    }
-
-    if let Some(Some(character)) = SCANCODE_TO_ASCII.get(scancode as usize) {
-        let mut buf = [0u8; 4];
-        let s = character.encode_utf8(&mut buf);
-        print_colored(s, Color::LightCyan, Color::Black);
     }
     
     unsafe {
-        let mut pic1 = Port::<u8>::new(0x20);
-        pic1.write(0x20);
+        PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8);
     }
 }

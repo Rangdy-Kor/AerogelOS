@@ -5,11 +5,8 @@
 use core::panic::PanicInfo;
 use vga_driver::{Color, print_colored, clear_screen}; 
 use vga_driver::println; 
-use x86_64::instructions::port::Port;
 
 mod interrupts;
-mod pic;
-
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     clear_screen();
@@ -23,22 +20,13 @@ pub extern "C" fn _start() -> ! {
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("VGA 텍스트 드라이버 초기화");
 
-    // 1단계: PIC 초기화 (모든 IRQ 마스크됨)
-    print_colored("PIC 초기화 중...\n", Color::LightCyan, Color::Black);
-    pic::init_pic();
+    // 1단계: PIC 초기화
+    interrupts::init_pics();
 
     // 2단계: IDT 로드
     interrupts::init_idt();
 
-    // 3단계: 키보드 IRQ만 언마스크
-    unsafe {
-        let mut pic1_data = Port::<u8>::new(0x21);
-        pic1_data.write(0xFD); // IRQ 1(키보드)만 활성화
-    }
-    print_colored("[OK] ", Color::LightGreen, Color::Black);
-    println!("키보드 IRQ 활성화");
-
-    // 4단계: CPU 인터럽트 활성화
+    // 3단계: CPU 인터럽트 활성화
     interrupts::enable_interrupts();
     
     print_colored("[OK] ", Color::LightGreen, Color::Black);
