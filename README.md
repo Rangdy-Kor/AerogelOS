@@ -1,1 +1,1 @@
-# MyOS Project
+# AerogelOS Project
