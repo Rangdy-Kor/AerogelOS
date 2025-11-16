@@ -20,21 +20,17 @@ pub extern "C" fn _start() -> ! {
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("VGA 텍스트 드라이버 초기화");
 
-    // 인터럽트 비활성화 상태에서 초기화
     x86_64::instructions::interrupts::disable();
     
-    // 1. IDT 먼저 로드
+    // 1단계: IDT만 로드
     interrupts::init_idt();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("IDT 로드 완료");
-
-    // 2. PIC 초기화
+    
+    // 2단계: PIC 초기화 추가
     interrupts::init_pics();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("PIC 초기화 완료");
-    
-    print_colored("[OK] ", Color::LightGreen, Color::Black);
-    println!("메모리 맵 확인");
     
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("커널 로드 완료");
@@ -48,15 +44,24 @@ pub extern "C" fn _start() -> ! {
     println!();
     print_colored("커널 초기화 완료!\n", Color::LightGreen, Color::Black);
     
-    // 3. 마지막에 인터럽트 활성화
+    // 3단계: 인터럽트 활성화
     print_colored("인터럽트 활성화 중...\n", Color::LightCyan, Color::Black);
     interrupts::enable_interrupts();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("CPU 인터럽트 활성화 완료");
     
     println!();
-    print_colored("시스템 준비됨. 키보드 입력을 시작하세요.\n", Color::LightCyan, Color::Black);
-    print_colored("> ", Color::Yellow, Color::Black);
+    print_colored("시스템 준비됨.\n", Color::LightCyan, Color::Black);
+    
+    println!();
+    print_colored("시스템 정보:\n", Color::Yellow, Color::Black);
+    println!("  - 아키텍처: x86_64");
+    println!("  - 개발자: 중학생 개발자!");
+    println!("  - 환경: WSL2");
+    
+    println!();
+    print_colored("커널 초기화 완료!\n", Color::LightGreen, Color::Black);
+    print_colored("인터럽트 비활성화 상태로 안정적으로 실행 중...\n", Color::Yellow, Color::Black);
     
     loop {
         x86_64::instructions::hlt();
