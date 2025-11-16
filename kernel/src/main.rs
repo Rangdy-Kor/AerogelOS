@@ -3,10 +3,10 @@
 #![feature(abi_x86_interrupt)]
 
 use core::panic::PanicInfo;
-use vga_driver::{Color, print_colored, clear_screen}; 
-use vga_driver::println; 
+use vga_driver::{Color, print_colored, clear_screen, println}; 
 
 mod interrupts;
+
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     clear_screen();
@@ -20,14 +20,18 @@ pub extern "C" fn _start() -> ! {
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("VGA 텍스트 드라이버 초기화");
 
-    // 1단계: PIC 초기화
-    interrupts::init_pics();
-
-    // 2단계: IDT 로드
+    // 인터럽트 비활성화 상태에서 초기화
+    x86_64::instructions::interrupts::disable();
+    
+    // 1. IDT 먼저 로드
     interrupts::init_idt();
+    print_colored("[OK] ", Color::LightGreen, Color::Black);
+    println!("IDT 로드 완료");
 
-    // 3단계: CPU 인터럽트 활성화
-    interrupts::enable_interrupts();
+    // 2. PIC 초기화
+    interrupts::init_pics();
+    print_colored("[OK] ", Color::LightGreen, Color::Black);
+    println!("PIC 초기화 완료");
     
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("메모리 맵 확인");
@@ -42,43 +46,16 @@ pub extern "C" fn _start() -> ! {
     println!("  - 환경: WSL2");
     
     println!();
-    print_colored("스크롤 테스트:\n", Color::Pink, Color::Black);
-    for i in 0..10 {
-        println!("라인 {}  - 스크롤이 작동하는지 확인", i);
-    }
-    
-    println!();
-    print_colored("색상 팔레트 테스트:", Color::White, Color::Black);
-    println!();
-    
-    print_colored(" Black ", Color::Black, Color::White);
-    print_colored(" Blue ", Color::Blue, Color::Black);
-    print_colored(" Green ", Color::Green, Color::Black);
-    print_colored(" Cyan ", Color::Cyan, Color::Black);
-    println!();
-    
-    print_colored(" Red ", Color::Red, Color::Black);
-    print_colored(" Magenta ", Color::Magenta, Color::Black);
-    print_colored(" Brown ", Color::Brown, Color::Black);
-    print_colored(" LightGray ", Color::LightGray, Color::Black);
-    println!();
-    
-    print_colored(" DarkGray ", Color::DarkGray, Color::Black);
-    print_colored(" LightBlue ", Color::LightBlue, Color::Black);
-    print_colored(" LightGreen ", Color::LightGreen, Color::Black);
-    print_colored(" LightCyan ", Color::LightCyan, Color::Black);
-    println!();
-    
-    print_colored(" LightRed ", Color::LightRed, Color::Black);
-    print_colored(" Pink ", Color::Pink, Color::Black);
-    print_colored(" Yellow ", Color::Yellow, Color::Black);
-    print_colored(" White ", Color::White, Color::Black);
-    println!();
-    
-    println!();
     print_colored("커널 초기화 완료!\n", Color::LightGreen, Color::Black);
-    print_colored("시스템 준비됨. 키보드 입력을 시작하세요.\n", Color::LightCyan, Color::Black);
+    
+    // 3. 마지막에 인터럽트 활성화
+    print_colored("인터럽트 활성화 중...\n", Color::LightCyan, Color::Black);
+    interrupts::enable_interrupts();
+    print_colored("[OK] ", Color::LightGreen, Color::Black);
+    println!("CPU 인터럽트 활성화 완료");
+    
     println!();
+    print_colored("시스템 준비됨. 키보드 입력을 시작하세요.\n", Color::LightCyan, Color::Black);
     print_colored("> ", Color::Yellow, Color::Black);
     
     loop {
