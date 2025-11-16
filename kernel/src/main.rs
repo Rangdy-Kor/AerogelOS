@@ -111,6 +111,9 @@ pub extern "C" fn _start() -> ! {
     println!("VGA 텍스트 드라이버 초기화");
 
     x86_64::instructions::interrupts::disable();
+
+	interrupts::init_gdt();  // IDT 전에 호출
+	interrupts::init_idt();
     
     interrupts::init_idt();
     print_colored("[OK] ", Color::LightGreen, Color::Black);

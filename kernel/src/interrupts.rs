@@ -1,4 +1,7 @@
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector};
+use x86_64::structures::tss::TaskStateSegment;
+use x86_64::VirtAddr;
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
@@ -21,6 +24,7 @@ pub fn read_scancode() -> Option<u8> {
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = 40;
+pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
 pub static PICS: Mutex<ChainedPics> =
     Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
@@ -30,6 +34,44 @@ pub static PICS: Mutex<ChainedPics> =
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard = PIC_1_OFFSET + 1,
+}
+
+lazy_static! {
+    static ref TSS: TaskStateSegment = {
+        let mut tss = TaskStateSegment::new();
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
+            const STACK_SIZE: usize = 4096 * 5;
+            static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
+            let stack_start = VirtAddr::from_ptr(unsafe { &STACK });
+            stack_start + STACK_SIZE
+        };
+        tss
+    };
+}
+
+lazy_static! {
+    static ref GDT: (GlobalDescriptorTable, Selectors) = {
+        let mut gdt = GlobalDescriptorTable::new();
+        let code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+        let tss_selector = gdt.add_entry(Descriptor::tss_segment(&TSS));
+        (gdt, Selectors { code_selector, tss_selector })
+    };
+}
+
+struct Selectors {
+    code_selector: SegmentSelector,
+    tss_selector: SegmentSelector,
+}
+
+pub fn init_gdt() {
+    use x86_64::instructions::tables::load_tss;
+    use x86_64::instructions::segmentation::{CS, Segment};
+    
+    GDT.0.load();
+    unsafe {
+        CS::set_reg(GDT.1.code_selector);
+        load_tss(GDT.1.tss_selector);
+    }
 }
 
 lazy_static! {
@@ -53,7 +95,12 @@ lazy_static! {
         idt.alignment_check.set_handler_fn(alignment_check_handler);
         idt.machine_check.set_handler_fn(machine_check_handler);
         idt.simd_floating_point.set_handler_fn(simd_fpu_handler);
-        idt.double_fault.set_handler_fn(double_fault_handler);
+        
+        unsafe {
+            idt.double_fault
+                .set_handler_fn(double_fault_handler)
+                .set_stack_index(DOUBLE_FAULT_IST_INDEX);
+        }
         
         idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
         
@@ -77,81 +124,74 @@ pub fn enable_interrupts() {
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // 완전히 비움
+    use x86_64::instructions::port::Port;
+    
+    let mut port = Port::new(0x60);
+    let scancode: u8 = unsafe { port.read() };
+    
+    unsafe {
+        let next_tail = (BUFFER_TAIL + 1) % 16;
+        if next_tail != BUFFER_HEAD {
+            SCANCODE_BUFFER[BUFFER_TAIL] = scancode;
+            BUFFER_TAIL = next_tail;
+        }
+        PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8);
+    }
 }
 
 extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {}
-
 extern "x86-interrupt" fn divide_error_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn debug_handler(_stack_frame: InterruptStackFrame) {}
-
 extern "x86-interrupt" fn nmi_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn overflow_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn bound_range_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn invalid_opcode_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn device_not_available_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn invalid_tss_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn segment_not_present_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn stack_segment_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn general_protection_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn page_fault_handler(
     _stack_frame: InterruptStackFrame,
     _error_code: x86_64::structures::idt::PageFaultErrorCode,
 ) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn x87_fpu_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn alignment_check_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn machine_check_handler(_stack_frame: InterruptStackFrame) -> ! {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn simd_fpu_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
-
 extern "x86-interrupt" fn double_fault_handler(
     _stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    loop {
-        x86_64::instructions::hlt();
-    }
+    loop { x86_64::instructions::hlt(); }
 }
