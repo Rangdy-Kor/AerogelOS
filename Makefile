@@ -9,7 +9,6 @@ kernel:
 	cd kernel && cargo bootimage
 
 run: kernel
-	cd kernel && cargo bootimage
 	./tools/run-qemu.sh
 
 clean:
