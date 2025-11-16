@@ -115,6 +115,9 @@ pub extern "C" fn _start() -> ! {
     interrupts::init_idt();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("IDT 로드 완료");
+
+	interrupts::init_gdt();
+	interrupts::init_idt();
     
     interrupts::init_pics();
     print_colored("[OK] ", Color::LightGreen, Color::Black);
@@ -132,7 +135,9 @@ pub extern "C" fn _start() -> ! {
     println!();
     print_colored("커널 초기화 완료!\n", Color::LightGreen, Color::Black);
     
-    interrupts::enable_interrupts();
+    // main.rs에서
+	interrupts::enable_interrupts();
+	println!("Interrupts enabled: {}", x86_64::instructions::interrupts::are_enabled());
     print_colored("[OK] ", Color::LightGreen, Color::Black);
     println!("CPU 인터럽트 활성화 완료");
     
@@ -141,13 +146,14 @@ pub extern "C" fn _start() -> ! {
     println!();
     
     loop {
-        if let Some(scancode) = interrupts::read_scancode() {
-            if scancode & 0x80 == 0 {
-                handle_keypress(scancode);
-            }
-        }
-        x86_64::instructions::hlt();
-    }
+		if let Some(scancode) = interrupts::read_scancode() {
+			print_colored("KEY!", Color::Red, Color::Black);
+			if scancode & 0x80 == 0 {
+				handle_keypress(scancode);
+			}
+		}
+		x86_64::instructions::hlt();
+	}
 }
 
 #[panic_handler]
