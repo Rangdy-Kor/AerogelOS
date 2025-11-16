@@ -141,15 +141,11 @@ pub extern "C" fn _start() -> ! {
     println!();
     
     loop {
-        x86_64::instructions::interrupts::disable();
-        
         if let Some(scancode) = interrupts::read_scancode() {
-            if scancode & 0x80 == 0 { // Key press
+            if scancode & 0x80 == 0 {
                 handle_keypress(scancode);
             }
         }
-        
-        x86_64::instructions::interrupts::enable();
         x86_64::instructions::hlt();
     }
 }

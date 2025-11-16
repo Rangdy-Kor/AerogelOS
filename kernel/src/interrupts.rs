@@ -4,18 +4,11 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-static SCANCODE_QUEUE: Mutex<[u8; 16]> = Mutex::new([0; 16]);
-static QUEUE_READ: AtomicU8 = AtomicU8::new(0);
-static QUEUE_WRITE: AtomicU8 = AtomicU8::new(0);
+static LAST_SCANCODE: AtomicU8 = AtomicU8::new(0);
 
 pub fn read_scancode() -> Option<u8> {
-    let read = QUEUE_READ.load(Ordering::Relaxed);
-    let write = QUEUE_WRITE.load(Ordering::Relaxed);
-    
-    if read != write {
-        let queue = SCANCODE_QUEUE.lock();
-        let scancode = queue[read as usize % 16];
-        QUEUE_READ.store((read + 1) % 16, Ordering::Relaxed);
+    let scancode = LAST_SCANCODE.swap(0, Ordering::Relaxed);
+    if scancode != 0 {
         Some(scancode)
     } else {
         None
@@ -88,13 +81,9 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
             options(nomem, nostack, preserves_flags)
         );
         
-        let write = QUEUE_WRITE.load(Ordering::Relaxed);
-        let mut queue = SCANCODE_QUEUE.lock();
-        queue[write as usize % 16] = scancode;
-        QUEUE_WRITE.store((write + 1) % 16, Ordering::Relaxed);
+        LAST_SCANCODE.store(scancode, Ordering::Relaxed);
         
-        let mut pic1_command = x86_64::instructions::port::Port::new(0x20);
-        pic1_command.write(0x20u8);
+        PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8);
     }
 }
 
