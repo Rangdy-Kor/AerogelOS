@@ -14,8 +14,8 @@ echo ""
 qemu-system-x86_64 \
     -drive format=raw,file=$KERNEL \
     -serial stdio \
-    -display gtk \
     -m 512M \
     -cpu qemu64 \
     -no-reboot \
-    -no-shutdown
+    -no-shutdown \
+    -display gtk,grab-on-hover=on
