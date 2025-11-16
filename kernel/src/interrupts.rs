@@ -2,16 +2,24 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::ptr;
 
-static LAST_SCANCODE: AtomicU8 = AtomicU8::new(0);
+static mut SCANCODE_BUFFER: [u8; 16] = [0; 16];
+static mut BUFFER_HEAD: usize = 0;
+static mut BUFFER_TAIL: usize = 0;
 
 pub fn read_scancode() -> Option<u8> {
-    let scancode = LAST_SCANCODE.swap(0, Ordering::Relaxed);
-    if scancode != 0 {
-        Some(scancode)
-    } else {
-        None
+    unsafe {
+        let head = ptr::read_volatile(&BUFFER_HEAD);
+        let tail = ptr::read_volatile(&BUFFER_TAIL);
+        
+        if head != tail {
+            let scancode = ptr::read_volatile(&SCANCODE_BUFFER[head]);
+            ptr::write_volatile(&mut BUFFER_HEAD, (head + 1) % 16);
+            Some(scancode)
+        } else {
+            None
+        }
     }
 }
 
@@ -72,18 +80,25 @@ pub fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 }
 
+static mut TEST_VAR: u8 = 0;
+
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     unsafe {
-        let scancode: u8;
+        let _scancode: u8;
         core::arch::asm!(
             "in al, 0x60",
-            out("al") scancode,
+            out("al") _scancode,
             options(nomem, nostack, preserves_flags)
         );
         
-        LAST_SCANCODE.store(scancode, Ordering::Relaxed);
+        // 테스트: 단순 메모리 쓰기
+        TEST_VAR = 1;
         
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8);
+        core::arch::asm!(
+            "out 0x20, al",
+            in("al") 0x20u8,
+            options(nomem, nostack, preserves_flags)
+        );
     }
 }
 
