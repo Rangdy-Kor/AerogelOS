@@ -1,41 +1,25 @@
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use lazy_static::lazy_static;
-use vga_driver::{println, print_colored, Color, WRITER};
 use pic8259::ChainedPics;
 use spin::Mutex;
-use core::fmt::Write;
-
-pub fn read_scancode() -> Option<u8> {
-    unsafe {
-        // 키보드 상태 확인
-        let status: u8;
-        core::arch::asm!(
-            "in al, 0x64",
-            out("al") status,
-            options(nomem, nostack, preserves_flags)
-        );
-        
-        // 데이터가 있으면 읽기
-        if status & 0x01 != 0 {
-            let scancode: u8;
-            core::arch::asm!(
-                "in al, 0x60",
-                out("al") scancode,
-                options(nomem, nostack, preserves_flags)
-            );
-            Some(scancode)
-        } else {
-            None
-        }
-    }
-}
-
 use core::sync::atomic::{AtomicU8, Ordering};
 
-static LAST_SCANCODE: AtomicU8 = AtomicU8::new(0);
+static SCANCODE_QUEUE: Mutex<[u8; 16]> = Mutex::new([0; 16]);
+static QUEUE_READ: AtomicU8 = AtomicU8::new(0);
+static QUEUE_WRITE: AtomicU8 = AtomicU8::new(0);
 
-pub fn get_last_scancode() -> u8 {
-    LAST_SCANCODE.swap(0, Ordering::Relaxed)
+pub fn read_scancode() -> Option<u8> {
+    let read = QUEUE_READ.load(Ordering::Relaxed);
+    let write = QUEUE_WRITE.load(Ordering::Relaxed);
+    
+    if read != write {
+        let queue = SCANCODE_QUEUE.lock();
+        let scancode = queue[read as usize % 16];
+        QUEUE_READ.store((read + 1) % 16, Ordering::Relaxed);
+        Some(scancode)
+    } else {
+        None
+    }
 }
 
 pub const PIC_1_OFFSET: u8 = 32;
@@ -55,7 +39,6 @@ lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         
-        // CPU 예외 핸들러
         idt.divide_error.set_handler_fn(divide_error_handler);
         idt.debug.set_handler_fn(debug_handler);
         idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
@@ -73,12 +56,9 @@ lazy_static! {
         idt.alignment_check.set_handler_fn(alignment_check_handler);
         idt.machine_check.set_handler_fn(machine_check_handler);
         idt.simd_floating_point.set_handler_fn(simd_fpu_handler);
-        
-        // 키보드 인터럽트만 활성화
-        idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
-        
-        // Double fault (스택 인덱스 제거)
         idt.double_fault.set_handler_fn(double_fault_handler);
+        
+        idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
         
         idt
     };
@@ -91,7 +71,6 @@ pub fn init_idt() {
 pub fn init_pics() {
     unsafe { 
         PICS.lock().initialize();
-        // 타이머 비활성화, 키보드만 활성화
         PICS.lock().write_masks(0b11111101, 0b11111111);
     };
 }
@@ -100,16 +79,32 @@ pub fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 }
 
-extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    let _ = stack_frame; // 사용하지 않음을 명시
+extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        let scancode: u8;
+        core::arch::asm!(
+            "in al, 0x60",
+            out("al") scancode,
+            options(nomem, nostack, preserves_flags)
+        );
+        
+        let write = QUEUE_WRITE.load(Ordering::Relaxed);
+        let mut queue = SCANCODE_QUEUE.lock();
+        queue[write as usize % 16] = scancode;
+        QUEUE_WRITE.store((write + 1) % 16, Ordering::Relaxed);
+        
+        let mut pic1_command = x86_64::instructions::port::Port::new(0x20);
+        pic1_command.write(0x20u8);
+    }
 }
+
+extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {}
 
 extern "x86-interrupt" fn divide_error_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
 
-extern "x86-interrupt" fn debug_handler(_stack_frame: InterruptStackFrame) {
-}
+extern "x86-interrupt" fn debug_handler(_stack_frame: InterruptStackFrame) {}
 
 extern "x86-interrupt" fn nmi_handler(_stack_frame: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
@@ -176,15 +171,5 @@ extern "x86-interrupt" fn double_fault_handler(
 ) -> ! {
     loop {
         x86_64::instructions::hlt();
-    }
-}
-
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // 완전히 비움 - 폴링 방식 사용
-}
-
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer as u8);
     }
 }
