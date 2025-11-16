@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(asm_sym)]
 
 use core::panic::PanicInfo;
 use vga_driver::{Color, print_colored, clear_screen, println}; 
@@ -54,16 +55,14 @@ pub extern "C" fn _start() -> ! {
     print_colored("시스템 준비됨.\n", Color::LightCyan, Color::Black);
     
     println!();
-    print_colored("시스템 정보:\n", Color::Yellow, Color::Black);
-    println!("  - 아키텍처: x86_64");
-    println!("  - 개발자: 중학생 개발자!");
-    println!("  - 환경: WSL2");
-    
-    println!();
-    print_colored("커널 초기화 완료!\n", Color::LightGreen, Color::Black);
-    print_colored("인터럽트 비활성화 상태로 안정적으로 실행 중...\n", Color::Yellow, Color::Black);
+    print_colored("시스템 준비됨. 키보드 폴링 모드:\n", Color::LightCyan, Color::Black);
     
     loop {
+        if let Some(scancode) = interrupts::read_scancode() {
+            if scancode & 0x80 == 0 {
+                print_colored("K", Color::LightGreen, Color::Black);
+            }
+        }
         x86_64::instructions::hlt();
     }
 }

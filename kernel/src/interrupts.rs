@@ -5,6 +5,39 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use core::fmt::Write;
 
+pub fn read_scancode() -> Option<u8> {
+    unsafe {
+        // 키보드 상태 확인
+        let status: u8;
+        core::arch::asm!(
+            "in al, 0x64",
+            out("al") status,
+            options(nomem, nostack, preserves_flags)
+        );
+        
+        // 데이터가 있으면 읽기
+        if status & 0x01 != 0 {
+            let scancode: u8;
+            core::arch::asm!(
+                "in al, 0x60",
+                out("al") scancode,
+                options(nomem, nostack, preserves_flags)
+            );
+            Some(scancode)
+        } else {
+            None
+        }
+    }
+}
+
+use core::sync::atomic::{AtomicU8, Ordering};
+
+static LAST_SCANCODE: AtomicU8 = AtomicU8::new(0);
+
+pub fn get_last_scancode() -> u8 {
+    LAST_SCANCODE.swap(0, Ordering::Relaxed)
+}
+
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = 40;
 
@@ -147,16 +180,7 @@ extern "x86-interrupt" fn double_fault_handler(
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use x86_64::instructions::port::Port;
-    
-    let mut port = Port::new(0x60);
-    let _scancode: u8 = unsafe { port.read() };
-    
-    // 일단 스캔코드만 읽고 처리는 나중에
-    
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8);
-    }
+    // 완전히 비움 - 폴링 방식 사용
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
