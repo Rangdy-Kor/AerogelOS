@@ -1,13 +1,12 @@
-// 7단계: 루프 진#![no_std]
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
 use core::panic::PanicInfo;
+use core::fmt::Write;
 
 mod interrupts;
 
-// 직접 VGA 쓰기 (디버그용)
 fn vga_write(x: usize, y: usize, s: &str, color: u8) {
     let vga = 0xb8000 as *mut u8;
     let offset = (y * 80 + x) * 2;
@@ -19,86 +18,92 @@ fn vga_write(x: usize, y: usize, s: &str, color: u8) {
     }
 }
 
-// 직접 VGA로 점 출력
-fn print_dot(pos: usize) {
+fn clear_screen() {
     let vga = 0xb8000 as *mut u8;
-    unsafe {
-        *vga.offset((pos * 2) as isize) = b'.';
-        *vga.offset((pos * 2 + 1) as isize) = 0x0E; // 노란색
+    for i in 0..(80 * 25) {
+        unsafe {
+            *vga.offset((i * 2) as isize) = b' ';
+            *vga.offset((i * 2 + 1) as isize) = 0x0F;
+        }
+    }
+}
+
+fn scancode_to_char(scancode: u8) -> Option<char> {
+    match scancode {
+        0x02 => Some('1'), 0x03 => Some('2'), 0x04 => Some('3'),
+        0x05 => Some('4'), 0x06 => Some('5'), 0x07 => Some('6'),
+        0x08 => Some('7'), 0x09 => Some('8'), 0x0A => Some('9'),
+        0x0B => Some('0'),
+        0x10 => Some('q'), 0x11 => Some('w'), 0x12 => Some('e'),
+        0x13 => Some('r'), 0x14 => Some('t'), 0x15 => Some('y'),
+        0x16 => Some('u'), 0x17 => Some('i'), 0x18 => Some('o'),
+        0x19 => Some('p'),
+        0x1E => Some('a'), 0x1F => Some('s'), 0x20 => Some('d'),
+        0x21 => Some('f'), 0x22 => Some('g'), 0x23 => Some('h'),
+        0x24 => Some('j'), 0x25 => Some('k'), 0x26 => Some('l'),
+        0x2C => Some('z'), 0x2D => Some('x'), 0x2E => Some('c'),
+        0x2F => Some('v'), 0x30 => Some('b'), 0x31 => Some('n'),
+        0x32 => Some('m'),
+        0x39 => Some(' '),
+        0x1C => Some('\n'),
+        _ => None,
     }
 }
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // 1단계: 시작 표시
-    vga_write(0, 0, "STEP 1: Start", 0x0F);
+    clear_screen();
     
-    // 2단계: 인터럽트 비활성화
+    vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
+    vga_write(0, 1, "Polling Mode (No Interrupts)", 0x07);
+    vga_write(0, 3, "Type something:", 0x0F);
+    
     x86_64::instructions::interrupts::disable();
-    vga_write(0, 1, "STEP 2: Disabled interrupts", 0x0F);
-    
-    // 3단계: GDT 초기화
     interrupts::init_gdt();
-    vga_write(0, 2, "STEP 3: GDT loaded", 0x0F);
     
-    // 4단계: IDT 초기화
-    interrupts::init_idt();
-    vga_write(0, 3, "STEP 4: IDT loaded", 0x0F);
-    
-    // 5단계: PIC 초기화
-    interrupts::init_pics();
-    vga_write(0, 4, "STEP 5: PIC initialized", 0x0F);
-    
-    // 5.5단계: PIC 초기화 후 대기
-    for _ in 0..10000 {
-        unsafe { core::arch::asm!("nop"); }
-    }
-    vga_write(0, 5, "STEP 5.5: PIC ready", 0x0F);
-    
-    // 6단계: 인터럽트 활성화
-    interrupts::enable_interrupts();
-    vga_write(0, 6, "STEP 6: Interrupts enabled", 0x0F);
-    
-    // 6.5단계: 인터럽트 상태 확인
-    if interrupts::are_interrupts_enabled() {
-        vga_write(0, 7, "STEP 6.5: IF=1 (OK)", 0x0A); // 녹색
-    } else {
-        vga_write(0, 7, "STEP 6.5: IF=0 (ERROR)", 0x0C); // 빨간색
-    }
-    
-    // 7단계: 루프 진입
-    vga_write(0, 8, "STEP 7: Entering loop", 0x0F);
-    
-    // 라벨 미리 출력
-    vga_write(0, 10, "Counter:", 0x0F);
-    vga_write(0, 11, "Timer:", 0x0E);
-    vga_write(0, 12, "Keyboard:", 0x0B);
-    
-    // 무한 루프 - 최대한 단순화
-    let mut counter: u32 = 0;
     let vga = 0xb8000 as *mut u8;
+    let mut input_pos = 0;
+    let input_row = 5;
     
     loop {
-        counter = counter.wrapping_add(1);
+        use x86_64::instructions::port::Port;
+        let mut status_port = Port::<u8>::new(0x64);
+        let mut data_port = Port::<u8>::new(0x60);
         
-        // 비트 마스크로 체크 (65536번마다)
-        if counter & 0xFFFF == 0 {
-            unsafe {
-                // 간단히 'X' 출력
-                *vga.offset((80 * 10 + 9) * 2) = b'X';
-                *vga.offset((80 * 10 + 9) * 2 + 1) = 0x0F;
+        unsafe {
+            let status = status_port.read();
+            if status & 0x01 != 0 {
+                let scancode = data_port.read();
+                
+                // 키 눌림만 처리 (release는 무시)
+                if scancode & 0x80 == 0 {
+                    if let Some(ch) = scancode_to_char(scancode) {
+                        if ch == '\n' {
+                            input_pos = 0;
+                            // 줄 지우기
+                            for i in 0..80 {
+                                *vga.offset((80 * input_row + i) * 2) = b' ';
+                                *vga.offset((80 * input_row + i) * 2 + 1) = 0x0F;
+                            }
+                        } else if input_pos < 80 {
+                            *vga.offset((80 * input_row + input_pos) * 2) = ch as u8;
+                            *vga.offset((80 * input_row + input_pos) * 2 + 1) = 0x0A;
+                            input_pos += 1;
+                        }
+                    }
+                }
             }
         }
         
-        // 빈 루프 (최적화 방지)
-        unsafe { core::arch::asm!("nop"); }
+        // CPU 휴식
+        for _ in 0..1000 {
+            unsafe { core::arch::asm!("nop"); }
+        }
     }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    vga_write(0, 10, "!!! KERNEL PANIC !!!", 0x4F); // 빨간 배경
-    loop {
-        x86_64::instructions::hlt();
-    }
+    vga_write(0, 20, "!!! KERNEL PANIC !!!", 0x4F);
+    loop { x86_64::instructions::hlt(); }
 }

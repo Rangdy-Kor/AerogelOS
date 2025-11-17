@@ -174,9 +174,8 @@ pub fn are_interrupts_enabled() -> bool {
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
     
+    // TIMER_TICKS 업데이트 제거 - 일단 EOI만
     unsafe {
-        TIMER_TICKS += 1;
-        // PIC에 직접 EOI 전송
         let mut pic1_cmd = Port::<u8>::new(0x20);
         pic1_cmd.write(0x20);
     }
