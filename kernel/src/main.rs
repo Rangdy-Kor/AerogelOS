@@ -3,9 +3,11 @@
 #![feature(abi_x86_interrupt)]
 
 use core::panic::PanicInfo;
-use core::fmt::Write;
 
 mod interrupts;
+mod shell;
+
+use shell::{Shell, ShellResult};
 
 fn vga_write(x: usize, y: usize, s: &str, color: u8) {
     let vga = 0xb8000 as *mut u8;
@@ -28,6 +30,36 @@ fn clear_screen() {
     }
 }
 
+fn clear_line(row: usize) {
+    let vga = 0xb8000 as *mut u8;
+    for i in 0..80 {
+        unsafe {
+            *vga.offset(((80 * row + i) * 2) as isize) = b' ';
+            *vga.offset(((80 * row + i) * 2 + 1) as isize) = 0x0F;
+        }
+    }
+}
+
+fn scroll_up() {
+    let vga = 0xb8000 as *mut u8;
+    unsafe {
+        // 1행부터 마지막 행까지를 한 줄씩 위로 복사
+        for row in 1..25 {
+            for col in 0..80 {
+                let src_offset = ((row * 80 + col) * 2) as isize;
+                let dst_offset = (((row - 1) * 80 + col) * 2) as isize;
+                *vga.offset(dst_offset) = *vga.offset(src_offset);
+                *vga.offset(dst_offset + 1) = *vga.offset(src_offset + 1);
+            }
+        }
+        // 마지막 줄 지우기
+        for col in 0..80 {
+            *vga.offset(((24 * 80 + col) * 2) as isize) = b' ';
+            *vga.offset(((24 * 80 + col) * 2 + 1) as isize) = 0x0F;
+        }
+    }
+}
+
 fn scancode_to_char(scancode: u8) -> Option<char> {
     match scancode {
         0x02 => Some('1'), 0x03 => Some('2'), 0x04 => Some('3'),
@@ -46,6 +78,7 @@ fn scancode_to_char(scancode: u8) -> Option<char> {
         0x32 => Some('m'),
         0x39 => Some(' '),
         0x1C => Some('\n'),
+        0x0E => Some('\x08'), // Backspace
         _ => None,
     }
 }
@@ -55,15 +88,15 @@ pub extern "C" fn _start() -> ! {
     clear_screen();
     
     vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
-    vga_write(0, 1, "Polling Mode (No Interrupts)", 0x07);
-    vga_write(0, 3, "Type something:", 0x0F);
+    vga_write(0, 1, "Type 'help' for commands", 0x07);
+    vga_write(0, 2, "", 0x0F);
+    vga_write(0, 3, "> ", 0x0F);
     
     x86_64::instructions::interrupts::disable();
     interrupts::init_gdt();
     
-    let vga = 0xb8000 as *mut u8;
-    let mut input_pos = 0;
-    let input_row = 5;
+    let mut shell = Shell::new();
+    let mut current_row: usize = 3;
     
     loop {
         use x86_64::instructions::port::Port;
@@ -75,27 +108,66 @@ pub extern "C" fn _start() -> ! {
             if status & 0x01 != 0 {
                 let scancode = data_port.read();
                 
-                // 키 눌림만 처리 (release는 무시)
                 if scancode & 0x80 == 0 {
                     if let Some(ch) = scancode_to_char(scancode) {
                         if ch == '\n' {
-                            input_pos = 0;
-                            // 줄 지우기
-                            for i in 0..80 {
-                                *vga.offset((80 * input_row + i) * 2) = b' ';
-                                *vga.offset((80 * input_row + i) * 2 + 1) = 0x0F;
+                            // 명령어 실행
+                            let result = shell.execute();
+                            
+                            // 다음 줄로 이동
+                            current_row += 1;
+                            if current_row >= 24 {
+                                scroll_up();
+                                current_row = 23;
                             }
-                        } else if input_pos < 80 {
-                            *vga.offset((80 * input_row + input_pos) * 2) = ch as u8;
-                            *vga.offset((80 * input_row + input_pos) * 2 + 1) = 0x0A;
-                            input_pos += 1;
+                            
+                            match result {
+                                ShellResult::Clear => {
+                                    clear_screen();
+                                    vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
+                                    vga_write(0, 1, "Type 'help' for commands", 0x07);
+                                    current_row = 3;
+                                },
+                                ShellResult::Output(text) => {
+                                    vga_write(0, current_row, text, 0x0A);
+                                    current_row += 1;
+                                    if current_row >= 24 {
+                                        scroll_up();
+                                        current_row = 23;
+                                    }
+                                },
+                                ShellResult::Echo(buf, len) => {
+                                    let text = core::str::from_utf8(&buf[..len]).unwrap_or("");
+                                    vga_write(0, current_row, text, 0x0A);
+                                    current_row += 1;
+                                    if current_row >= 24 {
+                                        scroll_up();
+                                        current_row = 23;
+                                    }
+                                },
+                                ShellResult::Empty => {},
+                            }
+                            
+                            // 새 프롬프트
+                            vga_write(0, current_row, "> ", 0x0F);
+                            
+                        } else if ch == '\x08' {
+                            // Backspace
+                            shell.backspace();
+                            clear_line(current_row);
+                            vga_write(0, current_row, "> ", 0x0F);
+                            vga_write(2, current_row, shell.get_buffer(), 0x0F);
+                            
+                        } else {
+                            // 일반 문자
+                            shell.add_char(ch);
+                            vga_write(2, current_row, shell.get_buffer(), 0x0F);
                         }
                     }
                 }
             }
         }
         
-        // CPU 휴식
         for _ in 0..1000 {
             unsafe { core::arch::asm!("nop"); }
         }
