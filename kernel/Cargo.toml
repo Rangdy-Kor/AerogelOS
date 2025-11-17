@@ -7,7 +7,7 @@ edition = "2021"
 bootloader = "0.9.23"
 volatile = "0.2.6"
 spin = "0.9"
-pic8259 = "0.10.1"
+#pic8259 = "0.10.1"
 x86_64 = "0.14.2"
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 uart_16550 = "0.2"
