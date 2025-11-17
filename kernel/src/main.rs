@@ -1,13 +1,122 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 use core::panic::PanicInfo;
 
 mod interrupts;
 mod shell;
+mod memory;
 
 use shell::{Shell, ShellResult};
+
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    clear_screen();
+    vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
+    vga_write(0, 1, "Initializing heap...", 0x07);
+    
+    memory::init_heap();
+    
+    vga_write(0, 1, "Heap ready! Type 'help'      ", 0x0A);
+    
+    interrupts::init_gdt();
+    interrupts::init_idt();
+    interrupts::init_pics();
+    
+    vga_write(0, 2, "Interrupts enabled!", 0x0A);
+    vga_write(0, 3, "> ", 0x0F);
+    
+    let mut shell = Shell::new();
+    let mut current_row: usize = 3;
+    
+    interrupts::enable_interrupts();
+    
+    loop {
+        if let Some(scancode) = interrupts::read_scancode() {
+            if let Some(ch) = scancode_to_char(scancode) {
+                if ch == '\n' {
+                    let result = shell.execute();
+                    
+                    current_row += 1;
+                    if current_row >= 24 {
+                        scroll_up();
+                        current_row = 23;
+                    }
+                    
+                    match result {
+                        ShellResult::Clear => {
+                            clear_screen();
+                            vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
+                            vga_write(0, 1, "Type 'help' for commands", 0x07);
+                            current_row = 3;
+                        },
+                        ShellResult::Exit => {
+                            vga_write(0, current_row, "Shutting down...", 0x0C);
+                            use x86_64::instructions::port::Port;
+                            let mut port = Port::<u16>::new(0x604);
+                            unsafe {port.write(0x2000);}
+                            loop { x86_64::instructions::hlt(); }
+                        },
+                        ShellResult::MemTest => {
+                            use alloc::vec::Vec;
+                            use alloc::string::String;
+                            
+                            let mut test_vec = Vec::new();
+                            for i in 0..10 {
+                                test_vec.push(i);
+                            }
+                            
+                            let _test_string = String::from("Heap works!");
+                            
+                            vga_write(0, current_row, "Vec test: OK, String test: OK", 0x0A);
+                            current_row += 1;
+                            if current_row >= 24 {
+                                scroll_up();
+                                current_row = 23;
+                            }
+                        },
+                        ShellResult::Output(text) => {
+                            vga_write(0, current_row, text, 0x0A);
+                            current_row += 1;
+                            if current_row >= 24 {
+                                scroll_up();
+                                current_row = 23;
+                            }
+                        },
+                        ShellResult::Echo(buf, len) => {
+                            let text = core::str::from_utf8(&buf[..len]).unwrap_or("");
+                            vga_write(0, current_row, text, 0x0A);
+                            current_row += 1;
+                            if current_row >= 24 {
+                                scroll_up();
+                                current_row = 23;
+                            }
+                        },
+                        ShellResult::Empty => {},
+                    }
+                    
+                    vga_write(0, current_row, "> ", 0x0F);
+                    
+                } else if ch == '\x08' {
+                    shell.backspace();
+                    clear_line(current_row);
+                    vga_write(0, current_row, "> ", 0x0F);
+                    vga_write(2, current_row, shell.get_buffer(), 0x0F);
+                    
+                } else {
+                    shell.add_char(ch);
+                    vga_write(2, current_row, shell.get_buffer(), 0x0F);
+                }
+            }
+        }
+        
+        x86_64::instructions::hlt();
+    }
+}
 
 fn vga_write(x: usize, y: usize, s: &str, color: u8) {
     let vga = 0xb8000 as *mut u8;
@@ -43,7 +152,6 @@ fn clear_line(row: usize) {
 fn scroll_up() {
     let vga = 0xb8000 as *mut u8;
     unsafe {
-        // 1행부터 마지막 행까지를 한 줄씩 위로 복사
         for row in 1..25 {
             for col in 0..80 {
                 let src_offset = ((row * 80 + col) * 2) as isize;
@@ -52,7 +160,6 @@ fn scroll_up() {
                 *vga.offset(dst_offset + 1) = *vga.offset(src_offset + 1);
             }
         }
-        // 마지막 줄 지우기
         for col in 0..80 {
             *vga.offset(((24 * 80 + col) * 2) as isize) = b' ';
             *vga.offset(((24 * 80 + col) * 2 + 1) as isize) = 0x0F;
@@ -61,6 +168,10 @@ fn scroll_up() {
 }
 
 fn scancode_to_char(scancode: u8) -> Option<char> {
+    if scancode & 0x80 != 0 {
+        return None; // 키 release 무시
+    }
+    
     match scancode {
         0x02 => Some('1'), 0x03 => Some('2'), 0x04 => Some('3'),
         0x05 => Some('4'), 0x06 => Some('5'), 0x07 => Some('6'),
@@ -78,99 +189,8 @@ fn scancode_to_char(scancode: u8) -> Option<char> {
         0x32 => Some('m'),
         0x39 => Some(' '),
         0x1C => Some('\n'),
-        0x0E => Some('\x08'), // Backspace
+        0x0E => Some('\x08'),
         _ => None,
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    clear_screen();
-    
-    vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
-    vga_write(0, 1, "Type 'help' for commands", 0x07);
-    vga_write(0, 2, "", 0x0F);
-    vga_write(0, 3, "> ", 0x0F);
-    
-    x86_64::instructions::interrupts::disable();
-    interrupts::init_gdt();
-    
-    let mut shell = Shell::new();
-    let mut current_row: usize = 3;
-    
-    loop {
-        use x86_64::instructions::port::Port;
-        let mut status_port = Port::<u8>::new(0x64);
-        let mut data_port = Port::<u8>::new(0x60);
-        
-        unsafe {
-            let status = status_port.read();
-            if status & 0x01 != 0 {
-                let scancode = data_port.read();
-                
-                if scancode & 0x80 == 0 {
-                    if let Some(ch) = scancode_to_char(scancode) {
-                        if ch == '\n' {
-                            // 명령어 실행
-                            let result = shell.execute();
-                            
-                            // 다음 줄로 이동
-                            current_row += 1;
-                            if current_row >= 24 {
-                                scroll_up();
-                                current_row = 23;
-                            }
-                            
-                            match result {
-                                ShellResult::Clear => {
-                                    clear_screen();
-                                    vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
-                                    vga_write(0, 1, "Type 'help' for commands", 0x07);
-                                    current_row = 3;
-                                },
-                                ShellResult::Output(text) => {
-                                    vga_write(0, current_row, text, 0x0A);
-                                    current_row += 1;
-                                    if current_row >= 24 {
-                                        scroll_up();
-                                        current_row = 23;
-                                    }
-                                },
-                                ShellResult::Echo(buf, len) => {
-                                    let text = core::str::from_utf8(&buf[..len]).unwrap_or("");
-                                    vga_write(0, current_row, text, 0x0A);
-                                    current_row += 1;
-                                    if current_row >= 24 {
-                                        scroll_up();
-                                        current_row = 23;
-                                    }
-                                },
-                                ShellResult::Empty => {},
-                            }
-                            
-                            // 새 프롬프트
-                            vga_write(0, current_row, "> ", 0x0F);
-                            
-                        } else if ch == '\x08' {
-                            // Backspace
-                            shell.backspace();
-                            clear_line(current_row);
-                            vga_write(0, current_row, "> ", 0x0F);
-                            vga_write(2, current_row, shell.get_buffer(), 0x0F);
-                            
-                        } else {
-                            // 일반 문자
-                            shell.add_char(ch);
-                            vga_write(2, current_row, shell.get_buffer(), 0x0F);
-                        }
-                    }
-                }
-            }
-        }
-        
-        for _ in 0..1000 {
-            unsafe { core::arch::asm!("nop"); }
-        }
     }
 }
 

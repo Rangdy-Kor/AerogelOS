@@ -8,7 +8,9 @@ pub struct Shell {
 pub enum ShellResult {
     Output(&'static str),
     Clear,
-    Echo([u8; 256], usize), // buffer와 길이
+    Echo([u8; 256], usize),
+    Exit,
+    MemTest,
     Empty,
 }
 
@@ -39,9 +41,11 @@ impl Shell {
             .unwrap_or("");
         
         let result = match cmd.trim() {
-            "help" => ShellResult::Output("Commands: help, clear, echo, version"),
+            "help" => ShellResult::Output("Commands: help, clear, echo, version, memtest, exit"),
             "clear" => ShellResult::Clear,
             "version" => ShellResult::Output("AerogelOS v0.1.0"),
+            "memtest" => ShellResult::MemTest,
+            "exit" => ShellResult::Exit,
             cmd if cmd.starts_with("echo ") => {
                 let text = &cmd[5..];
                 let mut echo_buf = [0u8; 256];

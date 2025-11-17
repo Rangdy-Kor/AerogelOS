@@ -4,20 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bootloader = "0.9"
+bootloader = "0.9.23"
 volatile = "0.2.6"
 spin = "0.9"
 pic8259 = "0.10.1"
-x86_64 = "0.14.2" # 64비트 아키텍처 지원 라이브러리
+x86_64 = "0.14.2"
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 uart_16550 = "0.2"
 vga_driver = { path = "../drivers/vga" }
+linked_list_allocator = "0.10.5"
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
-
-[lib]
-path = "src/lib.rs" 
