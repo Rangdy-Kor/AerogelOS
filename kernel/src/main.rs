@@ -4,6 +4,7 @@
 #![feature(alloc_error_handler)]
 
 extern crate alloc;
+
 use core::panic::PanicInfo;
 
 mod interrupts;
@@ -16,91 +17,114 @@ use shell::{Shell, ShellResult};
 pub extern "C" fn _start() -> ! {
     clear_screen();
     vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
+    vga_write(0, 1, "Initializing heap...", 0x07);
+    
+    // 간단한 힙 초기화 (실제 페이징 없이)
     memory::init_heap();
-    vga_write(0, 1, "Heap ready! Mode: POLLING", 0x0A);
-    vga_write(0, 2, "Type 'help' for commands", 0x07);
+    
+    vga_write(0, 1, "Heap ready! Type 'help'      ", 0x0A);
+    
+    x86_64::instructions::interrupts::disable();
+    interrupts::init_gdt();
+    
     vga_write(0, 3, "> ", 0x0F);
     
     let mut shell = Shell::new();
     let mut current_row: usize = 3;
     
     loop {
-        if let Some(scancode) = poll_keyboard() {
-            if let Some(ch) = scancode_to_char(scancode) {
-                handle_char(&mut shell, &mut current_row, ch);
+        use x86_64::instructions::port::Port;
+        let mut status_port = Port::<u8>::new(0x64);
+        let mut data_port = Port::<u8>::new(0x60);
+        
+        unsafe {
+            let status = status_port.read();
+            if status & 0x01 != 0 {
+                let scancode = data_port.read();
+                
+                if scancode & 0x80 == 0 {
+                    if let Some(ch) = scancode_to_char(scancode) {
+                        if ch == '\n' {
+                            let result = shell.execute();
+                            
+                            current_row += 1;
+                            if current_row >= 24 {
+                                scroll_up();
+                                current_row = 23;
+                            }
+                            
+                            match result {
+                                ShellResult::Clear => {
+                                    clear_screen();
+                                    vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
+                                    vga_write(0, 1, "Type 'help' for commands", 0x07);
+                                    current_row = 3;
+                                },
+                                ShellResult::Exit => {
+                                    vga_write(0, current_row, "Shutting down...", 0x0C);
+                                    let mut port = Port::<u16>::new(0x604);
+                                    port.write(0x2000);
+                                    loop { x86_64::instructions::hlt(); }
+                                },
+                                ShellResult::MemTest => {
+                                    // 힙 테스트
+                                    use alloc::vec::Vec;
+                                    use alloc::string::String;
+                                    
+                                    let mut test_vec = Vec::new();
+                                    for i in 0..10 {
+                                        test_vec.push(i);
+                                    }
+                                    
+                                    let test_string = String::from("Heap works!");
+                                    
+                                    vga_write(0, current_row, "Vec test: OK, String test: OK", 0x0A);
+                                    current_row += 1;
+                                    if current_row >= 24 {
+                                        scroll_up();
+                                        current_row = 23;
+                                    }
+                                },
+                                ShellResult::Output(text) => {
+                                    vga_write(0, current_row, text, 0x0A);
+                                    current_row += 1;
+                                    if current_row >= 24 {
+                                        scroll_up();
+                                        current_row = 23;
+                                    }
+                                },
+                                ShellResult::Echo(buf, len) => {
+                                    let text = core::str::from_utf8(&buf[..len]).unwrap_or("");
+                                    vga_write(0, current_row, text, 0x0A);
+                                    current_row += 1;
+                                    if current_row >= 24 {
+                                        scroll_up();
+                                        current_row = 23;
+                                    }
+                                },
+                                ShellResult::Empty => {},
+                            }
+                            
+                            vga_write(0, current_row, "> ", 0x0F);
+                            
+                        } else if ch == '\x08' {
+                            shell.backspace();
+                            clear_line(current_row);
+                            vga_write(0, current_row, "> ", 0x0F);
+                            vga_write(2, current_row, shell.get_buffer(), 0x0F);
+                            
+                        } else {
+                            shell.add_char(ch);
+                            vga_write(2, current_row, shell.get_buffer(), 0x0F);
+                        }
+                    }
+                }
             }
         }
         
-        // CPU를 절전 모드로 - 다음 인터럽트까지 대기
-        x86_64::instructions::hlt();
-    }
-}
-
-fn poll_keyboard() -> Option<u8> {
-    use x86_64::instructions::port::Port;
-    let mut status_port = Port::<u8>::new(0x64);
-    let status = unsafe { status_port.read() };
-    
-    if status & 0x01 != 0 {
-        let mut data_port = Port::<u8>::new(0x60);
-        Some(unsafe { data_port.read() })
-    } else {
-        None
-    }
-}
-
-fn handle_char(shell: &mut Shell, current_row: &mut usize, ch: char) {
-    if ch == '\n' {
-        let result = shell.execute();
-        *current_row += 1;
-        if *current_row >= 24 {
-            scroll_up();
-            *current_row = 23;
+        for _ in 0..1000 {
+            unsafe { core::arch::asm!("nop"); }
         }
-        
-        match result {
-            ShellResult::Clear => {
-                clear_screen();
-                vga_write(0, 0, "=== AerogelOS Shell ===", 0x0E);
-                vga_write(0, 1, "Type 'help' for commands", 0x07);
-                *current_row = 2;
-            },
-            ShellResult::Exit => {
-                vga_write(0, *current_row, "Shutting down...", 0x0C);
-                use x86_64::instructions::port::Port;
-                let mut port = Port::<u16>::new(0x604);
-                unsafe { port.write(0x2000); }
-                loop {}
-            },
-            ShellResult::MemTest => {
-                use alloc::vec::Vec;
-                use alloc::string::String;
-                let mut v = Vec::new();
-                for i in 0..10 { v.push(i); }
-                let _s = String::from("OK");
-                vga_write(0, *current_row, "Heap test: OK", 0x0A);
-                *current_row += 1;
-            },
-            ShellResult::Output(text) => {
-                vga_write(0, *current_row, text, 0x0A);
-                *current_row += 1;
-            },
-            ShellResult::Echo(buf, len) => {
-                let text = core::str::from_utf8(&buf[..len]).unwrap_or("");
-                vga_write(0, *current_row, text, 0x0A);
-                *current_row += 1;
-            },
-            ShellResult::Empty => {},
-        }
-        vga_write(0, *current_row, "> ", 0x0F);
-    } else if ch == '\x08' {
-        shell.backspace();
-        clear_line(*current_row);
-        vga_write(0, *current_row, "> ", 0x0F);
-        vga_write(2, *current_row, shell.get_buffer(), 0x0F);
-    } else {
-        shell.add_char(ch);
-        vga_write(2, *current_row, shell.get_buffer(), 0x0F);
     }
 }
 
@@ -108,11 +132,9 @@ fn vga_write(x: usize, y: usize, s: &str, color: u8) {
     let vga = 0xb8000 as *mut u8;
     let offset = (y * 80 + x) * 2;
     for (i, byte) in s.bytes().enumerate() {
-        if x + i < 80 {
-            unsafe {
-                *vga.offset((offset + i * 2) as isize) = byte;
-                *vga.offset((offset + i * 2 + 1) as isize) = color;
-            }
+        unsafe {
+            *vga.offset((offset + i * 2) as isize) = byte;
+            *vga.offset((offset + i * 2 + 1) as isize) = color;
         }
     }
 }
@@ -142,10 +164,10 @@ fn scroll_up() {
     unsafe {
         for row in 1..25 {
             for col in 0..80 {
-                let src = ((row * 80 + col) * 2) as isize;
-                let dst = (((row - 1) * 80 + col) * 2) as isize;
-                *vga.offset(dst) = *vga.offset(src);
-                *vga.offset(dst + 1) = *vga.offset(src + 1);
+                let src_offset = ((row * 80 + col) * 2) as isize;
+                let dst_offset = (((row - 1) * 80 + col) * 2) as isize;
+                *vga.offset(dst_offset) = *vga.offset(src_offset);
+                *vga.offset(dst_offset + 1) = *vga.offset(src_offset + 1);
             }
         }
         for col in 0..80 {
@@ -156,7 +178,6 @@ fn scroll_up() {
 }
 
 fn scancode_to_char(scancode: u8) -> Option<char> {
-    if scancode & 0x80 != 0 { return None; }
     match scancode {
         0x02 => Some('1'), 0x03 => Some('2'), 0x04 => Some('3'),
         0x05 => Some('4'), 0x06 => Some('5'), 0x07 => Some('6'),
@@ -172,7 +193,9 @@ fn scancode_to_char(scancode: u8) -> Option<char> {
         0x2C => Some('z'), 0x2D => Some('x'), 0x2E => Some('c'),
         0x2F => Some('v'), 0x30 => Some('b'), 0x31 => Some('n'),
         0x32 => Some('m'),
-        0x39 => Some(' '), 0x1C => Some('\n'), 0x0E => Some('\x08'),
+        0x39 => Some(' '),
+        0x1C => Some('\n'),
+        0x0E => Some('\x08'),
         _ => None,
     }
 }
@@ -180,5 +203,5 @@ fn scancode_to_char(scancode: u8) -> Option<char> {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     vga_write(0, 20, "!!! KERNEL PANIC !!!", 0x4F);
-    loop {}
+    loop { x86_64::instructions::hlt(); }
 }
