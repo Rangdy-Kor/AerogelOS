@@ -146,8 +146,8 @@ pub fn init_idt() {
 
 pub fn init_pics() {
     unsafe {
-        PICS.lock().initialize();
-        PICS.lock().write_masks(0b11111100, 0b11111110);  // 키보드 활성화 (bit 0 = 0)
+        PICS.lock().initialize();  // 추가!
+        PICS.lock().write_masks(0xFC, 0xFF);  // 0b11111100
     }
 }
 
@@ -176,6 +176,11 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
     
+	let vga = 0xb8000 as *mut u16;
+    unsafe {
+        *vga.add(79) = (b'K' as u16) | (0x4E << 8);  // 오른쪽 상단에 'K'
+    }
+
     *KEYBOARD_INTERRUPTS.lock() += 1;
     
     let mut port = Port::<u8>::new(0x60);
