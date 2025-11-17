@@ -1,3 +1,5 @@
+// kernel/src/interrupts.rs
+
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
@@ -5,8 +7,9 @@ use x86_64::VirtAddr;
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
+use x86_64::instructions::interrupts;
+use x86_64::instructions::hlt; 
 
-// 스캔코드 버퍼 (원형 큐) - Mutex로 보호
 pub struct ScancodeBuffer {
     buffer: [u8; 16],
     head: usize,
@@ -29,7 +32,7 @@ impl ScancodeBuffer {
             self.tail = next_tail;
             true
         } else {
-            false // 버퍼 가득 찼음
+            false
         }
     }
 
@@ -46,12 +49,13 @@ impl ScancodeBuffer {
 
 static SCANCODE_BUFFER: Mutex<ScancodeBuffer> = Mutex::new(ScancodeBuffer::new());
 
-// 디버깅용 카운터
 static TIMER_TICKS: Mutex<u64> = Mutex::new(0);
 static KEYBOARD_INTERRUPTS: Mutex<u64> = Mutex::new(0);
 
 pub fn read_scancode() -> Option<u8> {
-    SCANCODE_BUFFER.lock().pop()
+    interrupts::without_interrupts(|| {
+        SCANCODE_BUFFER.lock().pop()
+    })
 }
 
 pub fn get_timer_ticks() -> u64 {
@@ -118,7 +122,6 @@ lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         
-        // CPU 예외 핸들러들
         idt.divide_error.set_handler_fn(divide_error_handler);
         idt.debug.set_handler_fn(debug_handler);
         idt.non_maskable_interrupt.set_handler_fn(nmi_handler);
@@ -143,7 +146,6 @@ lazy_static! {
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
         }
         
-        // 타이머와 키보드 인터럽트 핸들러
         idt[InterruptIndex::Timer as usize].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
         
@@ -159,132 +161,122 @@ pub fn init_pics() {
     unsafe {
         PICS.lock().initialize();
         
-        // 타이머(IRQ0)와 키보드(IRQ1)만 활성화
-        // 다른 모든 IRQ는 비활성화
         use x86_64::instructions::port::Port;
         let mut pic1_data = Port::<u8>::new(0x21);
         let mut pic2_data = Port::<u8>::new(0xA1);
         
-        // PIC1: IRQ0(타이머), IRQ1(키보드)만 활성화 (비트가 0일 때 활성화)
-        pic1_data.write(0b11111100); // IRQ0, IRQ1만 활성화
+        // IRQ 0 (타이머)와 IRQ 1 (키보드)를 활성화 (마스크 비트가 0일 때 활성화)
+        // 0b11111100: IRQ0과 IRQ1만 0 (활성화)
+        pic1_data.write(0b11111100); 
         
-        // PIC2: 모든 IRQ 비활성화
+        // PIC2 (IRQ 8-15): 모든 IRQ 비활성화 (모두 마스크, 1)
         pic2_data.write(0xFF);
     }
+    // ChainedPics의 unmask 메서드는 사용하지 않고, 레지스터에 직접 마스킹 값을 씁니다.
 }
 
 pub fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 }
 
-// 인터럽트 플래그 확인 함수
 pub fn are_interrupts_enabled() -> bool {
     use x86_64::registers::rflags::{self, RFlags};
     rflags::read().contains(RFlags::INTERRUPT_FLAG)
 }
 
-// 타이머 인터럽트 핸들러
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // 타이머 틱 증가
     *TIMER_TICKS.lock() += 1;
     
-    // EOI 신호 전송
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer as u8);
     }
 }
 
-// 키보드 인터럽트 핸들러
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
     
-    // 인터럽트 카운터 증가
     *KEYBOARD_INTERRUPTS.lock() += 1;
     
-    // 스캔코드 읽기
     let mut port = Port::<u8>::new(0x60);
     let scancode: u8 = unsafe { port.read() };
     
-    // 버퍼에 저장
     SCANCODE_BUFFER.lock().push(scancode);
     
-    // EOI 신호 전송
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8);
     }
 }
 
-// CPU 예외 핸들러들
 extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {}
 
 extern "x86-interrupt" fn divide_error_handler(_stack_frame: InterruptStackFrame) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn debug_handler(_stack_frame: InterruptStackFrame) {}
 
 extern "x86-interrupt" fn nmi_handler(_stack_frame: InterruptStackFrame) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn overflow_handler(_stack_frame: InterruptStackFrame) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn bound_range_handler(_stack_frame: InterruptStackFrame) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(_stack_frame: InterruptStackFrame) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn device_not_available_handler(_stack_frame: InterruptStackFrame) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn invalid_tss_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn segment_not_present_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn stack_segment_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn general_protection_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn page_fault_handler(
     _stack_frame: InterruptStackFrame,
     _error_code: x86_64::structures::idt::PageFaultErrorCode,
 ) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn x87_fpu_handler(_stack_frame: InterruptStackFrame) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn alignment_check_handler(_stack_frame: InterruptStackFrame, _error_code: u64) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn machine_check_handler(_stack_frame: InterruptStackFrame) -> ! {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn simd_fpu_handler(_stack_frame: InterruptStackFrame) {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
 
 extern "x86-interrupt" fn double_fault_handler(
     _stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    loop { x86_64::instructions::hlt(); }
+    loop { hlt(); }
 }
