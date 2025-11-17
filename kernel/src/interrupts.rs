@@ -155,29 +155,34 @@ pub fn init_pics() {
         let mut pic2_cmd = Port::<u8>::new(0xA0);
         let mut pic2_data = Port::<u8>::new(0xA1);
         
-        // 기존 마스크 저장
-        let mask1 = pic1_data.read();
-        let mask2 = pic2_data.read();
-        
         // ICW1: 초기화 시작
         pic1_cmd.write(0x11);
         pic2_cmd.write(0x11);
+        
+        // 작은 지연
+        for _ in 0..100 { core::hint::spin_loop(); }
         
         // ICW2: 인터럽트 벡터 오프셋
         pic1_data.write(PIC_1_OFFSET);
         pic2_data.write(PIC_2_OFFSET);
         
+        for _ in 0..100 { core::hint::spin_loop(); }
+        
         // ICW3: 마스터/슬레이브 연결
         pic1_data.write(0x04);
         pic2_data.write(0x02);
+        
+        for _ in 0..100 { core::hint::spin_loop(); }
         
         // ICW4: 8086 모드
         pic1_data.write(0x01);
         pic2_data.write(0x01);
         
-        // 마스크 복원 후 타이머/키보드만 활성화
-        pic1_data.write(mask1 & 0xFC); // IRQ0, IRQ1 활성화
-        pic2_data.write(mask2 | 0xFF); // 모든 IRQ2-15 비활성화
+        for _ in 0..100 { core::hint::spin_loop(); }
+        
+        // 모든 인터럽트 활성화 (0x00 = 모두 활성화)
+        pic1_data.write(0x00);
+        pic2_data.write(0xFF);
     }
 }
 
