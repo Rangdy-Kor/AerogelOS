@@ -20,4 +20,3 @@ echo ""
     -m 512M \
     -serial stdio \
     -display sdl \
-    -no-reboot \

@@ -1,5 +1,3 @@
-// kernel/src/interrupts.rs
-
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
@@ -36,6 +34,7 @@ impl ScancodeBuffer {
         }
     }
 
+	#[allow(dead_code)]
     pub fn pop(&mut self) -> Option<u8> {
         if self.head != self.tail {
             let scancode = self.buffer[self.head];
@@ -48,7 +47,10 @@ impl ScancodeBuffer {
 }
 
 static SCANCODE_BUFFER: Mutex<ScancodeBuffer> = Mutex::new(ScancodeBuffer::new());
+
+#[allow(dead_code)]
 static TIMER_TICKS: Mutex<u64> = Mutex::new(0);
+
 static KEYBOARD_INTERRUPTS: Mutex<u64> = Mutex::new(0);
 
 pub fn read_scancode() -> Option<u8> {
@@ -85,7 +87,7 @@ lazy_static! {
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
             const STACK_SIZE: usize = 4096 * 5;
             static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            let stack_start = VirtAddr::from_ptr(unsafe { core::ptr::addr_of!(STACK) });
+            let stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(STACK));
             stack_start + STACK_SIZE
         };
         tss
@@ -145,7 +147,7 @@ pub fn init_idt() {
 pub fn init_pics() {
     unsafe {
         PICS.lock().initialize();
-        PICS.lock().write_masks(0b11111100, 0b11111111);
+        PICS.lock().write_masks(0b11111100, 0b11111110);  // 키보드 활성화 (bit 0 = 0)
     }
 }
 
@@ -160,7 +162,10 @@ pub fn are_interrupts_enabled() -> bool {
 
 // 타이머 인터럽트 핸들러
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    *TIMER_TICKS.lock() += 1;
+    extern "C" {
+        fn increment_tick();
+    }
+    unsafe { increment_tick(); }
     
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer as u8);

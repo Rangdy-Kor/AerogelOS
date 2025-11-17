@@ -11,7 +11,7 @@ static mut HEAP_MEMORY: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
 pub fn init_heap() {
     unsafe {
-        let heap_start = HEAP_MEMORY.as_mut_ptr();
+        let heap_start = core::ptr::addr_of_mut!(HEAP_MEMORY) as *mut u8;
         ALLOCATOR.lock().init(heap_start, HEAP_SIZE);
     }
 }

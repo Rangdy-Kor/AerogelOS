@@ -1,31 +1,65 @@
 // kernel/src/main.rs - 확장된 명령어 지원
-
+// kernel/src/main.rs
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+#![feature(abi_x86_interrupt)] 
 
 extern crate alloc;
 
 use core::panic::PanicInfo;
 use x86_64::instructions::hlt;
+use x86_64::instructions::port::Port;
 
 mod shell;
 mod memory;
+mod interrupts;
 
 use shell::Shell;
 
+
 static mut TICK_COUNTER: u64 = 0;
-static mut BG_COLOR: u8 = 0x0; // 기본 검은 배경
+static mut BG_COLOR: u8 = 0x0;
+
+#[no_mangle]
+pub fn increment_tick() {
+    unsafe { TICK_COUNTER = TICK_COUNTER.wrapping_add(1); }
+}
+
+// PIT 초기화 함수 추가
+fn init_pit() {
+    unsafe {
+        // PIT를 100Hz로 설정 (10ms마다 인터럽트)
+        let divisor: u16 = 11932; // 1193182 Hz / 100 Hz
+        let mut command_port = Port::<u8>::new(0x43);
+        let mut data_port = Port::<u8>::new(0x40);
+        
+        command_port.write(0x36); // Channel 0, lobyte/hibyte, rate generator
+        data_port.write((divisor & 0xFF) as u8);
+        data_port.write((divisor >> 8) as u8);
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     clear_screen();
     vga_write(0, 0, "=== AerogelOS v0.1.0 ===", 0x0E);
-    vga_write(0, 1, "[1/2] Initializing heap...", 0x07);
+    vga_write(0, 1, "[1/4] Initializing GDT...", 0x07);
+    
+    interrupts::init_gdt();
+    vga_write(0, 1, "[2/4] Initializing IDT...    ", 0x07);
+    
+    interrupts::init_idt();
+    vga_write(0, 1, "[3/4] Initializing heap...   ", 0x07);
     
     memory::init_heap();
-    vga_write(0, 1, "[2/2] Heap ready!           ", 0x0A);
+    vga_write(0, 1, "[4/4] Starting interrupts... ", 0x07);
     
+    init_pit(); // PIT 초기화
+    interrupts::init_pics();
+    interrupts::enable_interrupts();
+    
+    vga_write(0, 1, "[DONE] System ready!          ", 0x0A);
     vga_write(0, 2, "Welcome to AerogelOS!", 0x0F);
     vga_write(0, 3, "Type 'help' for available commands", 0x07);
     vga_write(0, 5, "> ", 0x0F);
@@ -34,7 +68,6 @@ pub extern "C" fn _start() -> ! {
     shell.set_boot_time(unsafe { TICK_COUNTER });
     let mut current_row: usize = 5;
     
-    use x86_64::instructions::port::Port;
     let mut status_port = Port::<u8>::new(0x64);
     let mut data_port = Port::<u8>::new(0x60);
     
@@ -47,9 +80,6 @@ pub extern "C" fn _start() -> ! {
     }
     
     loop {
-        // 틱 카운터 증가 (간단한 타이머 시뮬레이션)
-        unsafe { TICK_COUNTER = TICK_COUNTER.wrapping_add(1); }
-        
         let status: u8 = unsafe { status_port.read() };
         
         if (status & 0x01) != 0 {
@@ -85,7 +115,7 @@ pub extern "C" fn _start() -> ! {
                                 vga_write(32, 12, "Rebooting...", 0x0E);
                                 unsafe {
                                     let mut port = Port::<u8>::new(0x64);
-                                    port.write(0xFE); // 키보드 컨트롤러로 리셋
+                                    port.write(0xFE);
                                 }
                                 loop { hlt(); }
                             },
@@ -134,12 +164,11 @@ pub extern "C" fn _start() -> ! {
                                 current_row += 1;
                                 if current_row >= 24 { scroll_up(); current_row = 23; }
                                 
-                                vga_write(0, current_row, "Input: Keyboard polling mode", 0x0B);
+                                vga_write(0, current_row, "Timer: 100Hz PIT", 0x0B);
                                 current_row += 1;
                                 if current_row >= 24 { scroll_up(); current_row = 23; }
                             },
                             shell::ShellResult::DateTime => {
-                                // RTC에서 시간 읽기 (간단한 버전)
                                 vga_write(0, current_row, "Date: 2025-01-XX (RTC not impl)", 0x0B);
                                 current_row += 1;
                                 if current_row >= 24 { scroll_up(); current_row = 23; }
@@ -149,8 +178,8 @@ pub extern "C" fn _start() -> ! {
                                 if current_row >= 24 { scroll_up(); current_row = 23; }
                             },
                             shell::ShellResult::Uptime(ticks) => {
-                                // 1초 = 약 1000000 틱 (추정)
-                                let seconds = ticks / 1000000;
+                                // 100Hz PIT이므로 1초 = 100 틱
+                                let seconds = ticks / 100;
                                 let minutes = seconds / 60;
                                 let hours = minutes / 60;
                                 
@@ -162,7 +191,6 @@ pub extern "C" fn _start() -> ! {
                             },
                             shell::ShellResult::BgColor(color) => {
                                 unsafe { BG_COLOR = color; }
-                                // 전체 화면 배경색 변경
                                 change_background(color);
                                 vga_write(0, current_row, "Background color changed!", 0x0A);
                                 current_row += 1;
@@ -205,10 +233,13 @@ pub extern "C" fn _start() -> ! {
                 }
             }
         }
+
+		// hlt() 제거 - 계속 폴링
+		for _ in 0..500 {
+			unsafe { core::arch::asm!("pause"); }
+		}
         
-        for _ in 0..500 {
-            unsafe { core::arch::asm!("pause"); }
-        }
+        // hlt(); // CPU를 절전 모드로 전환 (인터럽트 대기)
     }
 }
 
@@ -270,7 +301,7 @@ fn change_background(color: u8) {
     let vga = 0xb8000 as *mut u8;
     for i in 0..(80 * 25) {
         unsafe {
-            let current_char = *vga.offset((i * 2) as isize);
+            let _current_char = *vga.offset((i * 2) as isize);
             let current_fg = *vga.offset((i * 2 + 1) as isize) & 0x0F;
             *vga.offset((i * 2 + 1) as isize) = (color << 4) | current_fg;
         }

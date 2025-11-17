@@ -64,7 +64,7 @@ impl Shell {
         
         let result = match parts[0] {
             "help" => {
-                let mut lines = [
+                let lines = [
                     "Available commands:",
                     "  help      - Show this message",
                     "  clear     - Clear screen",
